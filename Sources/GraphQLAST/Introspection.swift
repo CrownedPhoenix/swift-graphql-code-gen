@@ -144,7 +144,7 @@ private struct IntrospectionQuery: Decodable, Equatable {
 // MARK: - Loader
 
 /// Fetches a schema from the provided endpoint using introspection query.
-func fetch(from endpoint: URL, withHeaders headers: [String: String] = [:]) throws -> Data {
+func fetch(from endpoint: URL, withHeaders headers: [String: String] = [:]) async throws -> Data {
     /* Compose a request. */
     var request = URLRequest(url: endpoint)
 
@@ -167,63 +167,21 @@ func fetch(from endpoint: URL, withHeaders headers: [String: String] = [:]) thro
         options: JSONSerialization.WritingOptions()
     )
 
-    /* Semaphore */
-    let semaphore = DispatchSemaphore(value: 0)
-    var result: Result<Data, IntrospectionError>?
-
     /* Load the schema. */
-    URLSession.shared.dataTask(with: request) { data, response, error in
-        /* Check for errors. */
-        if let error = error {
-            result = .failure(.error(error))
-            semaphore.signal()
-            return
-        }
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            result = .failure(.unknown)
-            semaphore.signal()
-            return
-        }
-        
-        guard (200 ... 299).contains(httpResponse.statusCode) else {
-            result = .failure(.statusCode(httpResponse.statusCode))
-            semaphore.signal()
-            return
-        }
-
-        /* Save JSON to file. */
-        if let data = data {
-            result = .success(data)
-            semaphore.signal()
-            return
-        }
-    }.resume()
-
-    // Result
-    _ = semaphore.wait(wallTimeout: .distantFuture)
-
-    switch result {
-    case let .success(data):
-        return data
-    case let .failure(error):
-        throw error
-    default:
-        throw IntrospectionError.unknown
-    }
+    return try! await URLSession.shared.data(for: request).0
 }
 
 public enum IntrospectionError: Error {
-    
+
     /// There was an error during the execution.
     case error(Error)
-    
+
     /// Request received a bad status code from the server.
     case statusCode(Int)
-    
+
     /// We don;t know what caused the error, but something unexpected happened.
     case unknown
-    
+
     /// Error that signifies that there's no content at the provided file path.
     case emptyfile
 }
@@ -231,19 +189,19 @@ public enum IntrospectionError: Error {
 // MARK: - Extension
 
 public extension Schema {
-    
+
     /// Downloads a schema from the provided endpoint or a local file.
     ///
     /// - NOTE: The function is going to load from the local path if the URL is missing a scheme or has a `file` scheme.
-    init(from endpoint: URL, withHeaders headers: [String: String] = [:]) throws {
+    init(from endpoint: URL, withHeaders headers: [String: String] = [:]) async throws {
 
         let introspection: Data
         if endpoint.isFileURL {
             introspection = try Data(contentsOf: endpoint)
         } else {
-            introspection = try fetch(from: endpoint, withHeaders: headers)
+            introspection = try await fetch(from: endpoint, withHeaders: headers)
         }
-        
+
         self = try parse(introspection)
     }
 }

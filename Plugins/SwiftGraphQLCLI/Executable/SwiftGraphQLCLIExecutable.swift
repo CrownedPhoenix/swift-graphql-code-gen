@@ -10,11 +10,11 @@ import Yams
 // MARK: - CLI
 
 @main
-struct SwiftGraphQLCLI: ParsableCommand {
+struct SwiftGraphQLCLI: AsyncParsableCommand {
     // MARK: - Parameters
 
     @Argument(help: "GraphQL server endpoint or local file path from the current location.")
-    var endpoint: String
+    var endpoint: URL
 
     @Option(help: "Relative path from CWD to your YML config file.")
     var config: String?
@@ -36,30 +36,8 @@ struct SwiftGraphQLCLI: ParsableCommand {
 
     // MARK: - Main
 
-    func run() throws {
+    func run() async throws {
         print("Generating SwiftGraphQL Selection 🚀")
-
-        // Make sure we get a valid endpoint file or URL endpoint.
-        guard var url = URL(string: endpoint) else {
-            SwiftGraphQLCLI.exit(withError: .endpoint)
-        }
-
-        // Convert relative URLs to absolute ones.
-        if url.scheme == nil {
-            guard #available(macOS 12, *) else {
-                SwiftGraphQLCLI.exit(withError: .legacy)
-            }
-
-            var cwd = FilePath(FileManager.default.currentDirectoryPath)
-            if endpoint.starts(with: "/") {
-                cwd = FilePath("/")
-            }
-
-            guard let fileurl = URL(cwd.appending(endpoint)) else {
-                SwiftGraphQLCLI.exit(withError: .endpoint)
-            }
-            url = fileurl
-        }
 
         // Load configuration if config path is present, otherwise use default.
         let config: Config
@@ -97,7 +75,7 @@ struct SwiftGraphQLCLI: ParsableCommand {
         loadSchemaSpinner.start()
         let schema: Schema
         do {
-            schema = try Schema(from: url, withHeaders: headers)
+            schema = try await Schema(from: endpoint, withHeaders: headers)
         } catch let err {
             print(err.localizedDescription)
             SwiftGraphQLCLI.exit(withError: .unreachable)
@@ -111,10 +89,10 @@ struct SwiftGraphQLCLI: ParsableCommand {
 
         let scalars = ScalarMap(scalars: config.scalars)
         let generator = GraphQLCodegen(scalars: scalars)
-        let code: String
+        let fileData: [GraphQLCodegen.FileData]
 
         do {
-            code = try generator.generate(schema: schema)
+            fileData = try generator.generate(schema: schema)
             generateCodeSpinner.success("API generated successfully!")
         } catch let CodegenError.formatting(err) {
             generateCodeSpinner.error(err.localizedDescription)
@@ -130,8 +108,18 @@ struct SwiftGraphQLCLI: ParsableCommand {
 
         // Write to target file or stdout.
         if let outputPath = output {
-            try Folder.current.createFile(at: outputPath).write(code)
+            let outputDir = try Folder(path: outputPath)
+            for data in fileData {
+                try outputDir.createFile(at: data.filename).write(data.contents)
+            }
         } else {
+            let code = fileData.map({
+                """
+                \($0.filename):
+
+                \($0.contents)
+                """
+            }).joined(separator: "\n\n")
             FileHandle.standardOutput.write(code.data(using: .utf8)!)
         }
 
@@ -165,7 +153,7 @@ struct SwiftGraphQLCLI: ParsableCommand {
 
  ```yml
  scalars:
-     Date: DateTime
+ Date: DateTime
  ```
  */
 struct Config: Codable, Equatable {
@@ -204,5 +192,13 @@ extension ParsableCommand {
     /// Exits the program with an internal error.
     static func exit(withError error: SwiftGraphQLGeneratorError? = nil) -> Never {
         Self.exit(withError: error?.rawValue)
+    }
+}
+
+
+
+extension URL: ExpressibleByArgument {
+    public init?(argument: String) {
+        self.init(string: argument)
     }
 }
